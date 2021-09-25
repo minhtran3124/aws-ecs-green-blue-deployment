@@ -1,0 +1,123 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: The template for initializing infrastructure of services
+
+Parameters:
+  CFS3BaseUrl:
+    Description: The CloudFormation S3 bucket base url
+    Type: String
+
+  CFS3BucketService:
+    Description: The CloudFormation S3 bucket store service infrastructure code
+    Type: String
+
+  Environment:
+    Description: The environment of the deployment stack in (dev|prod)
+    Type: String
+    AllowedValues:
+      - dev
+      - prod
+    Default: dev
+
+  ProjectName:
+    Description: The project name
+    Type: String
+    Default: 'spectre'
+
+  PublicSubnet1CIDR:
+    Description: The CIDR for public subnet1
+    Type: String
+    Default: '10.0.0.0/24'
+
+  PublicSubnet2CIDR:
+    Description: The CIDR for public subnet2
+    Type: String
+    Default: '10.0.1.0/24'
+
+  PrivateSubnet1CIDR:
+    Description: The CIDR for private subnet1
+    Type: String
+    Default: '10.0.2.0/24'
+
+  PrivateSubnet2CIDR:
+    Description: The CIDR for private subnet2
+    Type: String
+    Default: '10.0.3.0/24'
+
+  VpcCIDR:
+    Description: The CIDR for VPC
+    Type: String
+    Default: '10.0.0.0/16'
+
+Resources:
+  # ----------------------------------------------------------------
+  # Stack for creating API repository
+  # ----------------------------------------------------------------
+  RepositoryStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub ${CFS3BaseUrl}/templates/repository.yml
+
+  # ----------------------------------------------------------------
+  # Stack for initializing Virtual Private Cloud
+  # ----------------------------------------------------------------
+  VPCStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub ${CFS3BaseUrl}/templates/vpc.yml
+      Parameters:
+        Environment: !Ref Environment
+        PrivateSubnet1CIDR: !Ref PrivateSubnet1CIDR
+        PrivateSubnet2CIDR: !Ref PrivateSubnet2CIDR
+        PublicSubnet1CIDR: !Ref PublicSubnet1CIDR
+        PublicSubnet2CIDR: !Ref PublicSubnet2CIDR
+        VpcCIDR: !Ref VpcCIDR
+
+  # ----------------------------------------------------------------
+  # Stack for initializing Security Groups for ECS and Database
+  # ----------------------------------------------------------------
+  SecurityGroupsStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub ${CFS3BaseUrl}/templates/security-groups.yml
+      Parameters:
+        Environment: !Ref Environment
+        VpcId: !GetAtt VPCStack.Outputs.VPCID
+
+  # ----------------------------------------------------------------
+  # Stack for creating LoadBalancer
+  # ----------------------------------------------------------------
+  LoadBalancerStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub ${CFS3BaseUrl}/templates/loadbalancer.yml
+      Parameters:
+        Environment: !Ref Environment
+        PrivateLoadBalancerSG: !GetAtt SecurityGroupsStack.Outputs.PrivateLoadBalancerSG
+        PrivateSubnet1ID: !GetAtt VPCStack.Outputs.PrivateSubnet1ID
+        PrivateSubnet2ID: !GetAtt VPCStack.Outputs.PrivateSubnet2ID
+        PublicLoadBalancerSG: !GetAtt SecurityGroupsStack.Outputs.PublicLoadBalancerSG
+        PublicSubnet1ID: !GetAtt VPCStack.Outputs.PublicSubnet1ID
+        PublicSubnet2ID: !GetAtt VPCStack.Outputs.PublicSubnet2ID
+        VpcId: !GetAtt VPCStack.Outputs.VPCID
+
+  # ----------------------------------------------------------------
+  # Deployment pipeline stack
+  # ----------------------------------------------------------------
+  DeploymentPipelineStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub ${CFS3BaseUrl}/templates/deployment-pipeline.yml
+      Parameters:
+        ApiECRArn: !GetAtt RepositoryStack.Outputs.ApiECRRepositoryArn
+        ApiECRUri: !GetAtt RepositoryStack.Outputs.ApiECRRepositoryUri
+        ArtifactBucketName: !Sub '${AWS::AccountId}-blue-green-deployment-artifacts'
+        CFS3BaseUrl: !Ref CFS3BaseUrl
+        CFS3BucketService: !Ref CFS3BucketService
+        DummyTargetGroupPublic: !GetAtt LoadBalancerStack.Outputs.DummyTargetGroupPublic
+        Environment: !Ref Environment
+        FargateContainerSecurityGroup: !GetAtt SecurityGroupsStack.Outputs.FargateContainerSecurityGroup
+        PrivateSubnet1ID: !GetAtt VPCStack.Outputs.PrivateSubnet1ID
+        PrivateSubnet2ID: !GetAtt VPCStack.Outputs.PrivateSubnet2ID
+        ProjectName: !Ref ProjectName
+        PublicLoadBalancer: !GetAtt LoadBalancerStack.Outputs.PublicLoadBalancer
+        VpcId: !GetAtt VPCStack.Outputs.VPCID

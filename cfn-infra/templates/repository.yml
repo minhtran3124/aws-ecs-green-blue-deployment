@@ -1,0 +1,51 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: The template for bootstraping permissions associated with AWS resources for each user roles
+
+Parameters:
+  InfrastructureRepositoryName:
+    Description: The infrastructure repository name
+    Type: String
+    Default: cfn-infra
+
+  ServiceRepositoryName:
+    Description: The service repository name
+    Type: String
+    Default: cfn-service
+
+Resources:
+  # ----------------------------------------------------------------
+  # INFRASTRUCTURE REPOSITORY
+  # ----------------------------------------------------------------
+  InfrastructureRepository:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: !Ref InfrastructureRepositoryName
+      RepositoryDescription: The repository store infrastructure code
+
+  # ----------------------------------------------------------------
+  # SERVICE REPOSITORY
+  # ----------------------------------------------------------------
+  ServiceRepository:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: !Ref ServiceRepositoryName
+      RepositoryDescription: The repository store service code
+
+Outputs:
+  InfraRepositoryArn:
+    Value: !GetAtt InfrastructureRepository.Arn
+
+  InfraRepositoryUrl:
+    Value: !GetAtt InfrastructureRepository.CloneUrlHttp
+
+  InfraRepositorySsh:
+    Value: !GetAtt InfrastructureRepository.CloneUrlSsh
+
+  ServiceRepositoryArn:
+    Value: !GetAtt ServiceRepository.Arn
+
+  ServiceRepositoryUrl:
+    Value: !GetAtt ServiceRepository.CloneUrlHttp
+
+  ServiceRepositorySsh:
+    Value: !GetAtt ServiceRepository.CloneUrlSsh

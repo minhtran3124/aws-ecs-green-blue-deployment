@@ -1,0 +1,228 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: This template create a ECS service
+
+Parameters:
+  ProjectName:
+    Description: The project name
+    Type: String
+    Default: spectre
+
+  Environment:
+    Description: The environment of the deployment stack in (dev|prod)
+    Type: String
+    Default: dev
+
+  ECSCluster:
+    Description: The ecs cluster
+    Type: String
+
+  ECSRoleArn:
+    Description: The ecs role arn
+    Type: String
+
+  ECSTaskExecutionRoleArn:
+    Description: The ecs task execution role arn
+    Type: String
+
+  APIServiceName:
+    Description: The api service name
+    Type: String
+    Default: 'api'
+
+  APIECRUri:
+    Description: The ECR repository uri
+    Type: String
+
+  APIDesiredCount:
+    Description: The desired count of container run apis
+    Type: Number
+    Default: 1
+
+  APITaskCPU:
+    Description: The cpu for api container service
+    Type: Number
+    Default: 256
+
+  APITaskMemory:
+    Description: The memory for api container service
+    Type: Number
+    Default: 512
+
+  APIContainerPort:
+    Description: What port number the application inside the docker container is binding to
+    Type: Number
+    Default: 8000
+
+  VpcId:
+    Description: The VPC Id
+    Type: AWS::EC2::VPC::Id
+
+  PrivateSubnet1ID:
+    Description: The ID of private subnet
+    Type: AWS::EC2::Subnet::Id
+
+  PrivateSubnet2ID:
+    Description: The ID of private subnet
+    Type: AWS::EC2::Subnet::Id
+
+  FargateContainerSecurityGroup:
+    Description: The ID of fargate container security group
+    Type: String
+
+  DummyTargetGroupPublic:
+    Description: The dummy target group is used to setup the ALB to just drop traffic
+    Type: String
+
+  PublicLoadBalancer:
+    Description: The public load balancer
+    Type: String
+
+  Priority:
+    Type: Number
+    Default: 1
+    Description: The priority for the routing rule added to the load balancer.
+                 This only applies if your have multiple services which have been
+                 assigned to different paths on the load balancer.
+
+  Tag:
+    Description: The tag of docker image for deployment
+    Type: String
+    Default: latest
+
+  TargetPort:
+    Description: The target port
+    Type: Number
+
+  Identifier:
+    Type: String
+
+  IsProduction:
+    Description: The flag to check target group for production or not
+    Type: String
+
+Resources:
+  # A target group. This is used for keeping track of all the tasks, and
+  # what IP addresses / port numbers they have. You can query it yourself,
+  # to use the addresses yourself, but most often this target group is just
+  # connected to an application load balancer, or network load balancer, so
+  # it can automatically distribute traffic across all the targets.
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 130
+      HealthCheckPath: '/'
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 120
+      HealthyThresholdCount: 2
+      TargetType: ip
+      VpcId: !Ref VpcId
+      Port: !Ref TargetPort
+      Protocol: HTTP
+      Matcher:
+        HttpCode: 200-299
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '30'
+      Tags:
+        - Key: Identifier
+          Value: !Ref Identifier
+        - Key: Image
+          Value: !Ref Tag
+        - Key: IsProduction
+          Value: !Ref IsProduction
+
+  PublicListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: 'forward'
+          TargetGroupArn: !Ref DummyTargetGroupPublic
+      LoadBalancerArn: !Ref PublicLoadBalancer
+      Port: !Ref TargetPort
+      Protocol: HTTP
+
+  PublicListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: 'forward'
+          TargetGroupArn: !Ref TargetGroup
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - '*'
+      ListenerArn: !Ref PublicListener
+      Priority: !Ref Priority
+
+  # -----------------------------------------------------
+  # Definition the log group for ECS servie
+  # -----------------------------------------------------
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/fargate/${ProjectName}/${Identifier}'
+      RetentionInDays: 365
+
+  # -----------------------------------------------------
+  # Create task definition and ecs service
+  # -----------------------------------------------------
+  # The task definition. This is a simple metadata description of what
+  # container to run, and what resource requirements it has.
+  APITaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      # Family: !Sub '${Environment}${APIServiceName}'
+      Cpu: !Ref APITaskCPU
+      Memory: !Ref APITaskMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !Ref ECSTaskExecutionRoleArn
+      TaskRoleArn: !Ref ECSTaskExecutionRoleArn
+      ContainerDefinitions:
+        - Name: !Sub '${Environment}${APIServiceName}'
+          Image: !Sub '${APIECRUri}:${Tag}'
+          PortMappings:
+            - ContainerPort: !Ref APIContainerPort
+          Environment:
+            - Name: ENVIRONMENT
+              Value: !Ref Environment
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: Tag
+              Value: !Ref Tag
+          Essential: true
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  # The service. The service is a resource which allows you to run multiple
+  # copies of a type of task, and gather up their logs and metrics, as well
+  # as monitor the number of running tasks and replace any that have crashed
+  APIService:
+    Type: AWS::ECS::Service
+    DependsOn: PublicListenerRule
+    Properties:
+      ServiceName: !Sub '${Environment}${APIServiceName}${Identifier}'
+      Cluster: !Ref ECSCluster
+      LaunchType: FARGATE
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 75
+      HealthCheckGracePeriodSeconds: 180
+      DesiredCount: !Ref APIDesiredCount
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          SecurityGroups:
+            - !Ref FargateContainerSecurityGroup
+          Subnets:
+            - !Ref PrivateSubnet1ID
+            - !Ref PrivateSubnet2ID
+      TaskDefinition: !Ref APITaskDefinition
+      LoadBalancers:
+        - ContainerName: !Sub '${Environment}${APIServiceName}'
+          ContainerPort: !Ref APIContainerPort
+          TargetGroupArn: !Ref TargetGroup

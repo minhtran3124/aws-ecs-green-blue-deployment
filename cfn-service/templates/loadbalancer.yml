@@ -1,0 +1,149 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: The stack create loadbalancer
+
+Parameters:
+  Environment:
+    Description: The environment
+    Type: String
+
+  VpcId:
+    Description: The VPC Id
+    Type: AWS::EC2::VPC::Id
+
+  PublicSubnet1ID:
+    Description: The public subnet ID
+    Type: AWS::EC2::Subnet::Id
+
+  PublicSubnet2ID:
+    Description: The public subnet ID
+    Type: AWS::EC2::Subnet::Id
+
+  PrivateSubnet1ID:
+    Description: The private subnet ID
+    Type: AWS::EC2::Subnet::Id
+
+  PrivateSubnet2ID:
+    Description: The private subnet ID
+    Type: AWS::EC2::Subnet::Id
+
+  PublicLoadBalancerSG:
+    Description: The public loadbalancer security group
+    Type: String
+
+  PrivateLoadBalancerSG:
+    Description: The private loadbalancer security group
+    Type: String
+
+  PublicLoadBalancerName:
+    Description: The loadbalancer name
+    Type: String
+    Default: 'public-lb'
+
+  PrivateLoadBalancerName:
+    Description: The loadbalancer name
+    Type: String
+    Default: 'private-lb'
+
+Resources:
+  # -----------------------------------------------------
+  # PublicLoadBalancer
+  # -----------------------------------------------------
+  PublicLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Ref PublicLoadBalancerName
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '30'
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref PublicLoadBalancerSG
+      Subnets:
+        # The load balancer is placed into the public subnets, so that traffic
+        # from the internet can reach the load balancer directly via the internet gateway
+        - !Ref PublicSubnet1ID
+        - !Ref PublicSubnet2ID
+      Tags:
+        - Key: Name
+          Value: PublicLoadBalancer
+        - Key: Environment
+          Value: !Ref Environment
+
+  # A dummy target group is used to setup the ALB to just drop traffic
+  # initially, before any real service target groups have been added.
+  DummyTargetGroupPublic:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 6
+      HealthCheckPath: '/'
+      HealthCheckProtocol: 'HTTP'
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Name: dummy-target-group-public
+      Port: 80
+      Protocol: 'HTTP'
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref VpcId
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # -----------------------------------------------------
+  # PrivateLoadBalancer
+  # -----------------------------------------------------
+  # An internal load balancer, this would be used for a service that is not
+  # directly accessible to the public, but instead should only receive traffic
+  # from your other services.
+  PrivateLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Ref PrivateLoadBalancerName
+      Scheme: internal
+      LoadBalancerAttributes:
+      - Key: idle_timeout.timeout_seconds
+        Value: '30'
+      Subnets:
+        # This load balancer is put into the private subnet, so that there is no
+        # route for the public to even be able to access the private load balancer.
+        - !Ref PrivateSubnet1ID
+        - !Ref PrivateSubnet2ID
+      SecurityGroups:
+        - !Ref PrivateLoadBalancerSG
+      Tags:
+        - Key: Name
+          Value: PrivateLoadBalancer
+        - Key: Environment
+          Value: !Ref Environment
+
+  # This dummy target group is used to setup the ALB to just drop traffic
+  # initially, before any real service target groups have been added.
+  DummyTargetGroupPrivate:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 6
+      HealthCheckPath: /
+      HealthCheckProtocol: 'HTTPS'
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Name: dummy-target-group-private
+      Port: 80
+      Protocol: 'HTTP'
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref VpcId
+
+  PrivateLoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: 'forward'
+          TargetGroupArn: !Ref DummyTargetGroupPrivate
+      LoadBalancerArn: !Ref PrivateLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+Outputs:
+  PublicLoadBalancer:
+    Value: !Ref PublicLoadBalancer
+
+  DummyTargetGroupPublic:
+    Value: !Ref DummyTargetGroupPublic

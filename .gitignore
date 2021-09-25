@@ -1,0 +1,12 @@
+.idea/
+.vscode/
+
+NOTE.txt
+
+# Test templates
+cfn-infra/functions/
+codecommit/
+
+# Other
+keys/
+tmp/

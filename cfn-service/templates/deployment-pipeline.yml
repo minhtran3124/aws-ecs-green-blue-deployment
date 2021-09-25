@@ -1,0 +1,491 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: The template for initializing codebuild to validate the CloudFormation templates
+
+Parameters:
+  ProjectName:
+    Description: The project name
+    Type: String
+
+  Environment:
+    Description: The Environment for API
+    Type: String
+
+  CFS3BaseUrl:
+    Description: The CloudFormation S3 bucket base url
+    Type: String
+
+  CFS3BucketService:
+    Description: The S3 bucket store cloudformation templates of service
+    Type: String
+
+  ArtifactBucketName:
+    Description: The artifact bucket name
+    Type: String
+
+  ApiECRArn:
+    Description: The ecr arn
+    Type: String
+
+  ApiECRUri:
+    Description: The ecr uri
+    Type: String
+
+  TemplateBucket:
+    Description: The S3 bucket contains cloudformation templates
+    Type: String
+    Default: '962372302662-spectre-cfn-service'
+
+  RepositoryName:
+    Description: The repository name
+    Type: String
+    Default: 'api'
+
+  BranchName:
+    Description: The branch name
+    Type: String
+    Default: 'develop'
+
+  VpcId:
+    Description: The VPC Id
+    Type: AWS::EC2::VPC::Id
+
+  PrivateSubnet1ID:
+    Description: The private subnet ID
+    Type: AWS::EC2::Subnet::Id
+
+  PrivateSubnet2ID:
+    Description: The private subnet ID
+    Type: AWS::EC2::Subnet::Id
+
+  DummyTargetGroupPublic:
+    Description: The dummy target group is used to setup the ALB to just drop traffic
+    Type: String
+
+  FargateContainerSecurityGroup:
+    Description: The ID of fargate container security group
+    Type: String
+
+  PublicLoadBalancer:
+    Description: The public load balancer
+    Type: String
+
+  PublicLoadBalancerName:
+    Description: The loadbalancer name
+    Type: String
+    Default: 'public-lb'
+
+Resources:
+  # -----------------------------------------------------
+  # Artifact bucket
+  # -----------------------------------------------------
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref ArtifactBucketName
+      VersioningConfiguration:
+        Status: Enabled
+
+  # -----------------------------------------------------
+  # Lambda function for flip traffic
+  # -----------------------------------------------------
+  BlueGreenFlipLambdaRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: lambda-blue-green-swap-role
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - lambda.amazonaws.com
+              Action:
+                - 'sts:AssumeRole'
+        Path: '/'
+
+  BlueGreenFlipLambdaPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: lambda-blue-green-swap-policy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'elasticloadbalancing:*'
+              - 'codepipeline:PutJobFailureResult'
+              - 'codepipeline:PutJobSuccessResult'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 'logs:CreateLogGroup'
+              - 'logs:CreateLogStream'
+              - 'logs:PutLogEvents'
+            Resource: 'arn:aws:logs:*:*:*'
+      Roles:
+        - !Ref BlueGreenFlipLambdaRole
+
+  BlueGreenFlipLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: lambda-blue-green-swap
+      Handler: blue_green_flip.handler
+      Runtime: python2.7
+      Code:
+        S3Bucket: '962372302662-spectre-cfn-service'
+        S3Key: 'scripts/scripts.zip'
+      MemorySize: 128
+      Timeout: 60
+      Role: !GetAtt BlueGreenFlipLambdaRole.Arn
+
+  # -----------------------------------------------------
+  # Cloudformation Role
+  # -----------------------------------------------------
+  CloudFormationExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'autoscaling:*'
+                  - 'cloudformation:*'
+                  - 'cloudwatch:*'
+                  - 'codebuild:*'
+                  - 'codecommit:*'
+                  - 'codedeploy:*'
+                  - 'codepipeline:*'
+                  - 'ec2:*'
+                  - 'ecr:*'
+                  - 'ecs:*'
+                  - 'elasticloadbalancing:*'
+                  - 'elasticloadbalancingv2:*'
+                  - 'events:*'
+                  - 'events:*'
+                  - 'iam:*'
+                  - 'kms:*'
+                  - 'lambda:*'
+                  - 'logs:*'
+                  - 'rds:*'
+                  - 's3:*'
+                  - 'sns:*'
+                  - 'sqs:*'
+                  - 'tag:*'
+                Resource: '*'
+
+  # -----------------------------------------------------
+  # CodeBuild Role
+  # -----------------------------------------------------
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: '/'
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'cloudformation:Describe*'
+                  - 'codebuild:BatchGetBuilds'
+                  - 'codepipeline:Get*'
+                  - 'ecr:GetAuthorizationToken'
+                  - 'elasticloadbalancing:Describe*'
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                  - 's3:GetObjectVersion'
+                Resource: !Sub arn:aws:s3:::${ArtifactBucketName}/*
+              - Effect: Allow
+                Action:
+                  - 'ecr:BatchCheckLayerAvailability'
+                  - 'ecr:BatchGetImage'
+                  - 'ecr:CompleteLayerUpload'
+                  - 'ecr:GetDownloadUrlForLayer'
+                  - 'ecr:InitiateLayerUpload'
+                  - 'ecr:PutImage'
+                  - 'ecr:UploadLayerPart'
+                Resource: !Ref ApiECRArn
+
+  BuildImageProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Name: 'project-build-image'
+      ServiceRole: !Ref CodeBuildServiceRole
+      Environment:
+        ComputeType: 'BUILD_GENERAL1_SMALL'
+        Image: 'aws/codebuild/docker:18.09.0'
+        Type: 'LINUX_CONTAINER'
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: REPOSITORY_URI
+            Value: !Ref ApiECRUri
+          - Name: ENVIRONMENT
+            Value: dev
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            pre_build:
+              commands:
+                - printenv
+                - echo -n "$CODEBUILD_LOG_PATH" > /tmp/build_id.out
+                - printf "%s:%s" "$REPOSITORY_URI" "$(cat /tmp/build_id.out)" > /tmp/build_tag.out
+                - printf '{"tag":"%s"}' "$(cat /tmp/build_id.out)" > /tmp/build.json
+                - $(aws ecr get-login --region $AWS_DEFAULT_REGION --no-include-email)
+            build:
+              commands:
+                - echo Build started on `date`
+                - echo Building the Docker image...
+                - docker build -t "$(cat /tmp/build_tag.out)" .
+                # - docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG
+                # - docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$ENVIRONMENT
+            post_build:
+              commands:
+                - echo Build completed on `date`
+                - echo Pushing the Docker images...
+                - docker push "$(cat /tmp/build_tag.out)"
+          artifacts:
+            files: /tmp/build.json
+            discard-paths: yes
+
+  BlueGreenElbDiscoveryProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Name: 'project-discovery'
+      ServiceRole: !Ref CodeBuildServiceRole
+      Environment:
+        ComputeType: 'BUILD_GENERAL1_SMALL'
+        Image: aws/codebuild/python:2.7.12
+        Type: 'LINUX_CONTAINER'
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: ELB_NAME
+            Value: !Ref PublicLoadBalancerName
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.1
+          phases:
+            install:
+              commands:
+                - pip install --upgrade python
+                - pip install --upgrade awscli
+                - pip install --upgrade boto3
+            pre_build:
+              commands:
+                - printenv
+                - ls -ld $(find .)
+                - python deploy.py
+          artifacts:
+            files: cf_inputs.json
+            discard-paths: yes
+
+  # -----------------------------------------------------
+  # CodePipline Role
+  # -----------------------------------------------------
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: '/'
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'codebuild:StartBuild'
+                  - 'codebuild:BatchGetBuilds'
+                  - 'cloudformation:*'
+                  - 'lambda:*'
+                  - 'iam:PassRole'
+                  - 'codecommit:*'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 's3:Get*'
+                  - 's3:Put*'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${ArtifactBucketName}/*'
+                  - !Sub 'arn:aws:s3:::${TemplateBucket}'
+                  - !Sub 'arn:aws:s3:::${TemplateBucket}/*'
+                  - !Sub 'arn:aws:s3:::${CFS3BucketService}'
+                  - !Sub 'arn:aws:s3:::${CFS3BucketService}/*'
+
+  # -----------------------------------------------------
+  # Pipeline for deployment
+  # -----------------------------------------------------
+  DeploymentPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: blue-green-deployment-pipeline
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: CodeCommit
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: '1'
+              Configuration:
+                BranchName: !Ref BranchName
+                RepositoryName: !Ref RepositoryName
+                PollForSourceChanges: false
+              OutputArtifacts:
+                - Name: SourceCodeCommit
+            - Name: CfnTemplate
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: S3
+                Version: '1'
+              OutputArtifacts:
+                - Name: SourceCfnTemplate
+              RunOrder: 1
+              Configuration:
+                S3Bucket: !Ref TemplateBucket
+                S3ObjectKey: templates/templates.zip
+            - Name: Scripts
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: S3
+                Version: '1'
+              OutputArtifacts:
+                - Name: Scripts
+              RunOrder: 1
+              Configuration:
+                S3Bucket: !Ref TemplateBucket
+                S3ObjectKey: scripts/scripts.zip
+        - Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref BuildImageProject
+              InputArtifacts:
+                - Name: SourceCodeCommit
+              OutputArtifacts:
+                - Name: BuildOutput
+              RunOrder: 1
+            - Name: Discover
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref BlueGreenElbDiscoveryProject
+              InputArtifacts:
+                - Name: Scripts
+              OutputArtifacts:
+                - Name: DiscoveryOutput
+              RunOrder: 2
+        - Name: Deploy-Approve-Swap
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              Configuration:
+                ChangeSetName: Deploy
+                ActionMode: CREATE_UPDATE
+                StackName: !Sub '${ProjectName}-ecs-cluster'
+                Capabilities: CAPABILITY_NAMED_IAM
+                TemplatePath: SourceCfnTemplate::templates/ecs-cluster.yml
+                RoleArn: !GetAtt CloudFormationExecutionRole.Arn
+                ParameterOverrides: !Sub |
+                  {
+                    "ProjectName": "${ProjectName}",
+                    "Environment": "${Environment}",
+                    "CFS3BaseUrl": "${CFS3BaseUrl}",
+                    "ApiECRUri": "${ApiECRUri}",
+                    "VpcId": "${VpcId}",
+                    "PrivateSubnet1ID": "${PrivateSubnet1ID}",
+                    "PrivateSubnet2ID": "${PrivateSubnet2ID}",
+                    "FargateContainerSecurityGroup": "${FargateContainerSecurityGroup}",
+                    "DummyTargetGroupPublic": "${DummyTargetGroupPublic}",
+                    "PublicLoadBalancer": "${PublicLoadBalancer}",
+                    "Code1" : { "Fn::GetParam" : [ "DiscoveryOutput", "cf_inputs.json", "Code1" ] },
+                    "Code2" : { "Fn::GetParam" : [ "DiscoveryOutput", "cf_inputs.json", "Code2" ] }
+                  }
+              InputArtifacts:
+                - Name: SourceCfnTemplate
+                - Name: DiscoveryOutput
+              RunOrder: 1
+            - Name: Approve-Blue-Green-Swap
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: '1'
+              Configuration:
+                CustomData: "Continue with blue-green swap ?"
+              RunOrder: 2
+            - Name: Swap-Target-Group
+              ActionTypeId:
+                Category: Invoke
+                Owner: AWS
+                Provider: Lambda
+                Version: '1'
+              Configuration:
+                FunctionName: !Ref BlueGreenFlipLambda
+                UserParameters: !Sub |
+                  {
+                    "ElbName": "${PublicLoadBalancerName}"
+                  }
+              RunOrder: 3

@@ -1,0 +1,102 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: The template for creating s3 bucket
+
+Parameters:
+  ArtifactStoreBucketName:
+    Description: The artifact bucket name
+    Type: String
+
+  CloudTrailBucketName:
+    Description: The S3 bucket cloudtrail
+    Type: String
+    Default: '962372302662-spectre-cloudtrail'
+
+  SourceObjectKey:
+    Description: S3 source artifact
+    Type: String
+    Default: source.zip
+
+Resources:
+  # ----------------------------------------------------------------
+  # S3 bucket to store artifacts
+  # ----------------------------------------------------------------
+  ArtifactStoreBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref ArtifactStoreBucketName
+      VersioningConfiguration:
+        Status: Enabled
+
+  ArtifactStoreBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ArtifactStoreBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyUnEncryptedObjectUploads
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:PutObject'
+            Resource: !Sub 'arn:aws:s3:::${ArtifactStoreBucketName}/*'
+            Condition:
+              StringNotEquals:
+                's3:x-amz-server-side-encryption': 'aws:kms'
+          - Sid: DenyInsecureConnections
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: !Sub 'arn:aws:s3:::${ArtifactStoreBucketName}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+
+  # ----------------------------------------------------------------
+  # CloudTrail for logging event on s3 buckets
+  # ----------------------------------------------------------------
+  CloudTrailBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Ref CloudTrailBucketName
+
+  CloudTrailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CloudTrailBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AWSCloudTrailAclCheck
+            Effect: Allow
+            Principal:
+              Service:
+                - cloudtrail.amazonaws.com
+            Action: 's3:GetBucketAcl'
+            Resource: !GetAtt CloudTrailBucket.Arn
+          - Sid: AWSCloudTrailWrite
+            Effect: Allow
+            Principal:
+              Service:
+                - cloudtrail.amazonaws.com
+            Action: 's3:PutObject'
+            Resource: !Sub 'arn:aws:s3:::${CloudTrailBucketName}/AWSLogs/${AWS::AccountId}/*'
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+
+  CloudTrail:
+    DependsOn:
+      - CloudTrailBucketPolicy
+    Type: AWS::CloudTrail::Trail
+    Properties:
+      S3BucketName: !Ref CloudTrailBucket
+      EventSelectors:
+        - DataResources:
+          - Type: AWS::S3::Object
+            Values:
+              - !Join [ '', [ !GetAtt ArtifactStoreBucket.Arn, '/cfn-service/', !Ref SourceObjectKey ] ]
+          ReadWriteType: WriteOnly
+      IncludeGlobalServiceEvents: true
+      IsLogging: true
+      IsMultiRegionTrail: true

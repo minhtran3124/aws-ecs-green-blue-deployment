@@ -1,0 +1,483 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: The template for initializing codebuild to validate the CloudFormation templates
+
+Parameters:
+  ArtifactStoreBucket:
+    Description: The s3 bucket name for store artifacts
+    Type: String
+
+  CodeBuildComputeType:
+    Description: The compute type for codebuild project
+    Type: String
+    Default: 'BUILD_GENERAL1_SMALL'
+
+  CodeBuildComputeImage:
+    Description: The image for codebuild project
+    Type: String
+    Default: 'aws/codebuild/amazonlinux2-x86_64-standard:3.0'
+
+  CFS3BucketService:
+    Description: The S3 bucket store cloudformation templates of service
+    Type: String
+
+  NotificationEndpoint:
+    Description: The email receive notification
+    Type: String
+
+  ProjectName:
+    Description: The project name
+    Type: String
+
+  RepositoryArn:
+    Description: The repository arn
+    Type: String
+
+  RepositoryUrl:
+    Description: The repository url
+    Type: String
+
+Resources:
+  # ----------------------------------------------------------------
+  # Create Topic to send email notifications
+  # ----------------------------------------------------------------
+  NotificationSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Endpoint: !Ref NotificationEndpoint
+          Protocol: email
+
+  NotificationSNSTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Id: !Sub '${AWS::StackName}'
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+                - codebuild.amazonaws.com
+                - codecommit.amazonaws.com
+            Action: sns:Publish
+            Resource: '*'
+      Topics:
+        - !Ref NotificationSNSTopic
+
+  # ----------------------------------------------------------------
+  # Create event role with permission can start codebuild
+  # ----------------------------------------------------------------
+  CWEManagedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'codebuild:StartBuild'
+            Resource: '*'
+
+  CWERole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}CWEInfra'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - !Ref CWEManagedPolicy
+
+  # ----------------------------------------------------------------
+  # Create lambda role for start codebuild validate templates
+  # ----------------------------------------------------------------
+  LambdaManagedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Action:
+              - 'codebuild:*'
+              - 'codecommit:*'
+              - 'logs:CreateLogGroup'
+              - 'logs:CreateLogStream'
+              - 'logs:PutLogEvents'
+              - 'logs:GetLogEvents'
+            Resource: '*'
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}LambdaPullRequest'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - !Ref LambdaManagedPolicy
+
+  # ----------------------------------------------------------------
+  # Create lambda function to comment on pull request and
+  #   start codebuild for validating templates
+  #
+  # Create event rule trigger run codebuild validate cloudformation templates
+  #   when have any pull request to develop branch
+  # ----------------------------------------------------------------
+  PullRequestFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-PullRequest-CodebuildStart'
+      Description: Triggers CodeBuild on PR's in CodeCommit
+      Handler: 'index.lambda_handler'
+      MemorySize: 128
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: python3.6
+      Timeout: 10
+      Environment:
+        Variables:
+          PROJECT_NAME: 'project-codecommit-pull-request'
+      Code:
+        ZipFile: |
+          import os
+          import datetime
+          import boto3
+
+          codecommit_client = boto3.client("codecommit")
+          codebuild_client = boto3.client("codebuild")
+
+          project_name = os.environ["PROJECT_NAME"]
+
+          def lambda_handler(event, context):
+            if event["detail"]["event"] in ["pullRequestSourceBranchUpdated", "pullRequestCreated"]:
+                pull_request_id = event["detail"]["pullRequestId"]
+                repository_name = event["detail"]["repositoryNames"][0]
+                source_commit = event["detail"]["sourceCommit"]
+                source_reference = event["detail"]["sourceCommit"]
+                destination_commit = event["detail"]["destinationCommit"]
+
+                # Comment for pull request
+                codecommit_client.post_comment_for_pull_request(
+                  pullRequestId = pull_request_id,
+                  repositoryName = repository_name,
+                  beforeCommitId = source_commit,
+                  afterCommitId = destination_commit,
+                  content = f""" Build For Validating The Pull Request has been started.
+                      Timestamp: {datetime.datetime.utcnow().time()}"""
+                )
+
+                source_branch = source_reference.split("/")[-1]
+                source_version = "refs/heads/{}^{}".format(source_branch, source_commit)
+
+                # Trigger run CodeBuild for validation templates
+                codebuild_client.start_build(
+                  projectName=f"{project_name}",
+                  sourceVersion=f"{source_version}",
+                  environmentVariablesOverride=[
+                    {
+                      "name": "repositoryName",
+                      "value": repository_name,
+                      "type": "PLAINTEXT"
+                    },
+                    {
+                      "name": "pullRequestId",
+                      "value": pull_request_id,
+                      "type": "PLAINTEXT"
+                    },
+                    {
+                      "name": "afterCommitId",
+                      "value": source_commit,
+                      "type": "PLAINTEXT"
+                    },
+                    {
+                      "name": "beforeCommitId",
+                      "value": destination_commit,
+                      "type": "PLAINTEXT"
+                    }
+                  ]
+                )
+
+  CodeCommitPullRequestEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ProjectName}CodeCommitPullRequestLambda'
+      Description: 'Trigger notifications based on CodeCommit PullRequests'
+      EventPattern:
+        source:
+          - 'aws.codecommit'
+        detail-type:
+          - 'CodeCommit Pull Request State Change'
+        resources:
+          - !Ref RepositoryArn
+        detail:
+          event:
+            - 'pullRequestSourceBranchUpdated'
+            - 'pullRequestCreated'
+      State: 'ENABLED'
+      Targets:
+        - Id: codecommit-notifications-pull-request
+          Arn: !Ref NotificationSNSTopic
+        - Id: lambda-comment-pull-request
+          Arn: !GetAtt PullRequestFunction.Arn
+
+  PullRequestFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt PullRequestFunction.Arn
+      Principal: 'events.amazonaws.com'
+      SourceArn: !GetAtt CodeCommitPullRequestEventRule.Arn
+
+  # ----------------------------------------------------------------
+  # Create CodeBuild for validation cloudformation templates with
+  #   pull request to develop branch
+  #
+  # Create role for codebuild with permissions:
+  #   - get and upload to s3 bucket
+  #   - create and upload logs
+  #   - validate cloudformation templates
+  #   - pull code from codecommit
+  # ----------------------------------------------------------------
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}CodeBuildInfra'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: !Sub '${ProjectName}CodeBuildInfra'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'codebuild:*'
+                  - 'iam:PassRole'
+                  - 'cloudformation:ValidateTemplate'
+                  - 'codecommit:*'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:List*'
+                  - 's3:PutObject'
+                Resource: '*'
+
+  CodeBuildPullRequest:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: 'project-codecommit-pull-request'
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        ComputeType: !Ref CodeBuildComputeType
+        Image: !Ref CodeBuildComputeImage
+        PrivilegedMode: true
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: AWS_REGION
+            Value: !Ref AWS::Region
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Source:
+        Type: CODECOMMIT
+        Location: !Ref RepositoryUrl
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              commands:
+                - ls -la
+                - pip install cfn-lint
+            build:
+              commands:
+                - cfn-lint --template master.yml --region $AWS_REGION
+                - cfn-lint --template templates/*.yml --region $AWS_REGION
+          artifacts:
+            files:
+              - '*'
+
+  # ----------------------------------------------------------------
+  # Event rule trigger event from codebuild state to send
+  #   email notifications
+  #
+  # Create lamdba to comment codebuild validate result on pull request
+  # ----------------------------------------------------------------
+  ResultPullRequestFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-PullRequest-CodebuildResult'
+      Description: Triggers CodeBuild Validate Template state change
+      Handler: 'index.lambda_handler'
+      MemorySize: 128
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: python3.6
+      Timeout: 10
+      Environment:
+        Variables:
+          PROJECT_NAME: !Sub '${ProjectName}-PullRequest-CodebuildResult'
+      Code:
+        ZipFile: |
+          import boto3
+
+          codecommit_client = boto3.client('codecommit')
+
+          def lambda_handler(event, context):
+            timestamp = event['time']
+            build_status = event['detail']['build-status']
+            log_link = event['detail']['additional-information']['logs']['deep-link']
+            environments = event['detail']['additional-information']['environment']['environment-variables']
+
+            pull_request_id = None
+            repository_name = None
+            after_commit_id = None
+            before_commit_id = None
+
+            for environment in environments:
+              if environment['name'] == 'pullRequestId':
+                pull_request_id = environment['value']
+
+              if environment['name'] == 'repositoryName':
+                repository_name = environment['value']
+
+              if environment['name'] == 'afterCommitId':
+                after_commit_id = environment['value']
+
+              if environment['name'] == 'beforeCommitId':
+                before_commit_id = environment['value']
+
+            if pull_request_id and repository_name \
+              and after_commit_id and before_commit_id:
+
+              # Comment for validate result
+              codecommit_client.post_comment_for_pull_request(
+                repositoryName=repository_name,
+                pullRequestId=pull_request_id,
+                afterCommitId=after_commit_id,
+                beforeCommitId=before_commit_id,
+                content = f"""
+                  Build Result: {build_status}
+                  Timestamp: {timestamp}
+                  Log Detail: {log_link}"""
+              )
+
+  CodeBuildPullRequestNotificationEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ProjectName}CodeBuildPullRequestNotification'
+      Description: 'Trigger notifications based on CodeBuild state changes'
+      EventPattern:
+        source:
+          - 'aws.codebuild'
+        detail-type:
+          - 'CodeBuild Build State Change'
+        detail:
+          build-status:
+            - 'FAILED'
+            - 'SUCCEEDED'
+          project-name:
+            - !Ref CodeBuildPullRequest
+      State: 'ENABLED'
+      Targets:
+        - Id: codebuild-notifications-pr-validate
+          Arn: !Ref NotificationSNSTopic
+        - Id: codebuild-validate-result
+          Arn: !GetAtt ResultPullRequestFunction.Arn
+
+  ResultPullRequestFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt ResultPullRequestFunction.Arn
+      Principal: 'events.amazonaws.com'
+      SourceArn: !GetAtt CodeBuildPullRequestNotificationEventRule.Arn
+
+  # ----------------------------------------------------------------
+  # Codebuild Project for upload cloudformation templates to S3 bucket
+  # Event rule trigger CodeCommit repository state change
+  # ----------------------------------------------------------------
+  CodeCommitStateChange:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: project-codecommit-state-change
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        ComputeType: !Ref CodeBuildComputeType
+        Image: !Ref CodeBuildComputeImage
+        PrivilegedMode: true
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: CFS3_BUCKET_SERVICE
+            Value: !Ref CFS3BucketService
+          - Name: ARTIFACT_BUCKET
+            Value: !Ref ArtifactStoreBucket
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Source:
+        Type: CODECOMMIT
+        Location: !Ref RepositoryUrl
+        BuildSpec: |
+          version: 0.2
+          phases:
+            pre_build:
+              commands:
+                - SOURCE_FILE="source.zip"
+                - zip scripts/scripts.zip scripts/*
+                - zip templates/templates.zip templates/*
+            build:
+              commands:
+                - aws s3 sync . s3://${CFS3_BUCKET_SERVICE}/ --exclude '*.git/*'
+            post_build:
+              commands:
+                - zip -r "${SOURCE_FILE}" master.yml parameters.json templates/
+                - aws s3 cp --acl bucket-owner-full-control --sse aws:kms "${SOURCE_FILE}" s3://${ARTIFACT_BUCKET}/cfn-service/ --exclude '*.git/*'
+          artifacts:
+            files:
+              - '*'
+
+  CodeCommitStateChangeEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Trigger notifications based on CodeCommit Change on develop branch
+      EventPattern:
+        source:
+          - 'aws.codecommit'
+        detail-type:
+          - 'CodeCommit Repository State Change'
+        resources:
+          - !Ref RepositoryArn
+        detail:
+          event:
+            - 'referenceCreated'
+            - 'referenceUpdated'
+          referenceType:
+            - branch
+          referenceName:
+            - develop
+      State: 'ENABLED'
+      Targets:
+        - Id: codebuild-upload-templates
+          Arn: !GetAtt CodeCommitStateChange.Arn
+          RoleArn: !GetAtt CWERole.Arn

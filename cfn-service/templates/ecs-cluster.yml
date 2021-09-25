@@ -1,0 +1,216 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: This template create a ECS cluster, service and task definition
+
+Parameters:
+  ProjectName:
+    Description: The project name
+    Type: String
+
+  Environment:
+    Description: The Environment for API
+    Type: String
+
+  CFS3BaseUrl:
+    Description: The CloudFormation S3 bucket base url
+    Type: String
+
+  ApiECRUri:
+    Description: The ECR repository uri
+    Type: String
+
+  APIServiceName:
+    Description: The api service name
+    Type: String
+    Default: 'api'
+
+  APIDesiredCount:
+    Description: The desired count of container run apis
+    Type: Number
+    Default: 1
+
+  APITaskCPU:
+    Description: The cpu for api container service
+    Type: Number
+    Default: 256
+
+  APITaskMemory:
+    Description: The memory for api container service
+    Type: Number
+    Default: 512
+
+  VpcId:
+    Description: The VPC Id
+    Type: AWS::EC2::VPC::Id
+
+  PrivateSubnet1ID:
+    Description: The private subnet ID
+    Type: AWS::EC2::Subnet::Id
+
+  PrivateSubnet2ID:
+    Description: The private subnet ID
+    Type: AWS::EC2::Subnet::Id
+
+  FargateContainerSecurityGroup:
+    Description: The ID of fargate container security group
+    Type: String
+
+  DummyTargetGroupPublic:
+    Description: The dummy target group is used to setup the ALB to just drop traffic
+    Type: String
+
+  PublicLoadBalancer:
+    Description: The public load balancer
+    Type: String
+
+  Code1:
+    Type: String
+    Default: latest
+
+  Code2:
+    Type: String
+    Default: latest
+
+Resources:
+  # -----------------------------------------------------
+  # ECS Cluster
+  # -----------------------------------------------------
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${Environment}Cluster'
+
+  # -----------------------------------------------------
+  # ECS Role
+  # -----------------------------------------------------
+  # This is an IAM role which authorizes ECS to manage resources on your
+  # account on your behalf, such as updating your load balancer with the
+  # details of where your containers are, so that traffic can reach your
+  # containers.
+  ECSRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Environment}ECS'
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+              - ecs.amazonaws.com
+          Action:
+            - 'sts:AssumeRole'
+      Path: /
+      Policies:
+      - PolicyName: ecs-service
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              # Rules which allow ECS to attach network interfaces to instances
+              # on your behalf in order for awsvpc networking mode to work right
+              - 'ec2:AttachNetworkInterface'
+              - 'ec2:CreateNetworkInterface'
+              - 'ec2:CreateNetworkInterfacePermission'
+              - 'ec2:DeleteNetworkInterface'
+              - 'ec2:DeleteNetworkInterfacePermission'
+              - 'ec2:Describe*'
+              - 'ec2:DetachNetworkInterface'
+
+              # Rules which allow ECS to update load balancers on your behalf
+              # with the information sabout how to send traffic to your containers
+              - 'elasticloadbalancing:DeregisterInstancesFromLoadBalancer'
+              - 'elasticloadbalancing:DeregisterTargets'
+              - 'elasticloadbalancing:Describe*'
+              - 'elasticloadbalancing:RegisterInstancesWithLoadBalancer'
+              - 'elasticloadbalancing:RegisterTargets'
+            Resource: '*'
+
+  # This is a role which is used by the ECS tasks themselves.
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+              - ecs-tasks.amazonaws.com
+          Action:
+            - 'sts:AssumeRole'
+      Path: '/'
+      Policies:
+        - PolicyName: AmazonECSTaskExecutionRolePolicy
+          PolicyDocument:
+            Statement:
+            - Effect: Allow
+              Action:
+                # Allow the ECS Tasks to download images from ECR
+                - 'ecr:BatchCheckLayerAvailability'
+                - 'ecr:BatchGetImage'
+                - 'ecr:GetAuthorizationToken'
+                - 'ecr:GetDownloadUrlForLayer'
+                - 'logs:CreateLogStream'
+                - 'logs:PutLogEvents'
+                - 'sqs:ListQueues'
+              Resource: '*'
+
+  # -----------------------------------------------------
+  # Definition for  green service
+  # -----------------------------------------------------
+  GreenService:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub '${CFS3BaseUrl}/templates/ecs-service.yml'
+      Parameters:
+        APIContainerPort: 8000
+        APIDesiredCount: !Ref APIDesiredCount
+        APIECRUri: !Ref ApiECRUri
+        APIServiceName: !Ref APIServiceName
+        APITaskCPU: !Ref APITaskCPU
+        APITaskMemory: !Ref APITaskMemory
+        DummyTargetGroupPublic: !Ref DummyTargetGroupPublic
+        ECSCluster: !Ref ECSCluster
+        ECSRoleArn: !GetAtt ECSRole.Arn
+        ECSTaskExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+        Environment: !Ref Environment
+        FargateContainerSecurityGroup: !Ref FargateContainerSecurityGroup
+        Identifier: 'Code2'
+        IsProduction: False
+        Priority: 1
+        PrivateSubnet1ID: !Ref PrivateSubnet1ID
+        PrivateSubnet2ID: !Ref PrivateSubnet2ID
+        ProjectName: !Ref ProjectName
+        PublicLoadBalancer: !Ref PublicLoadBalancer
+        Tag: !Ref Code2
+        TargetPort: 8080
+        VpcId: !Ref VpcId
+
+  # -----------------------------------------------------
+  # Definition for  blue service
+  # -----------------------------------------------------
+  BlueService:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub '${CFS3BaseUrl}/templates/ecs-service.yml'
+      Parameters:
+        APIContainerPort: 8000
+        APIDesiredCount: !Ref APIDesiredCount
+        APIECRUri: !Ref ApiECRUri
+        APIServiceName: !Ref APIServiceName
+        APITaskCPU: !Ref APITaskCPU
+        APITaskMemory: !Ref APITaskMemory
+        DummyTargetGroupPublic: !Ref DummyTargetGroupPublic
+        ECSCluster: !Ref ECSCluster
+        ECSRoleArn: !GetAtt ECSRole.Arn
+        ECSTaskExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+        Environment: !Ref Environment
+        FargateContainerSecurityGroup: !Ref FargateContainerSecurityGroup
+        Identifier: 'Code1'
+        IsProduction: True
+        Priority: 1
+        PrivateSubnet1ID: !Ref PrivateSubnet1ID
+        PrivateSubnet2ID: !Ref PrivateSubnet2ID
+        ProjectName: !Ref ProjectName
+        PublicLoadBalancer: !Ref PublicLoadBalancer
+        Tag: !Ref Code1
+        TargetPort: 80
+        VpcId: !Ref VpcId

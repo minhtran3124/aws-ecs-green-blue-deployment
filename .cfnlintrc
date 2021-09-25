@@ -1,0 +1,6 @@
+templates:
+- infra/templates/*.yml
+include_checks:
+- I
+ignore_checks:
+- W8001

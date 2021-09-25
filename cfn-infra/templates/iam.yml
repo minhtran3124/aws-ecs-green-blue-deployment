@@ -1,0 +1,326 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: The template for bootstraping permissions associated with AWS resources for each user roles
+
+Parameters:
+  AdminGroupName:
+    Description: The Admin Group Name
+    Type: String
+    Default: 'Admin'
+
+  AdminPassword:
+    Description: The password of admin user
+    Type: String
+    Default: 'admin@P4ssword'
+    NoEcho: true
+
+  AWSManagedCodeCommitPowerUserPolicy:
+    Description: Provides full access to AWS CodeCommit repositories, but does not allow repository deletion
+    Type: String
+    Default: arn:aws:iam::aws:policy/AWSCodeCommitPowerUser
+
+  CFS3BucketInfra:
+    Description: The S3 bucket store cloudformation templates of infrastructure
+    Type: String
+
+  CFS3BucketService:
+    Description: The S3 bucket store cloudformation templates of service
+    Type: String
+
+  DeveloperGroupName:
+    Description: The Developer Group Name
+    Type: String
+    Default: 'Developer'
+
+  DevopsGroupName:
+    Description: The Devops Group Name
+    Type: String
+    Default: 'Devops'
+
+  InfraRepositoryArn:
+    Description: The infrastructure repository arn
+    Type: String
+
+  ProjectName:
+    Description: The project name
+    Type: String
+    Default: 'spectre'
+
+  ServiceRepositoryArn:
+    Description: The service repository arn
+    Type: String
+
+Resources:
+  # ----------------------------------------------------------------
+  # Admin Resource
+  # ----------------------------------------------------------------
+  AdminGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: !Ref AdminGroupName
+      ManagedPolicyArns:
+        - !Ref AWSManagedCodeCommitPowerUserPolicy
+
+  AdminUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub '${ProjectName}Admin'
+      Groups:
+        - !Ref AdminGroup
+      LoginProfile:
+        Password: !Ref AdminPassword
+        PasswordResetRequired: true
+      Tags:
+        - Key: role
+          Value: admin
+
+  AdminUserAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref AdminUser
+
+  AdminPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub '${ProjectName}AdminAccess'
+      PolicyDocument:
+        Statement:
+          - Sid: ManageUsersPermissions
+            Effect: Allow
+            Action:
+              - 'iam:ChangePasword'
+              - 'iam:CreateAccessKey'
+              - 'iam:CreateLoginProfile'
+              - 'iam:CreateUser'
+              - 'iam:DeleteAccessKey'
+              - 'iam:DeleteLoginProfile'
+              - 'iam:DeleteUser'
+              - 'iam:UpdateAccessKey'
+              - 'iam:ListAttachedUserPolicies'
+              - 'iam:ListPolicies'
+              - 'iam:ListUserPolicies'
+              - 'iam:ListGroups'
+              - 'iam:ListGroupsForUser'
+              - 'iam:GetPolicy'
+              - 'iam:GetAccountSummary'
+            Resource: '*'
+          - Sid: ManageBucketCloudFormationTemplates
+            Effect: Allow
+            Action:
+              - 's3:*'
+            Resource:
+              - !Sub 'arn:aws:s3:::${CFS3BucketInfra}'
+              - !Sub 'arn:aws:s3:::${CFS3BucketService}'
+              - !Sub 'arn:aws:s3:::${CFS3BucketInfra}/*'
+              - !Sub 'arn:aws:s3:::${CFS3BucketService}/*'
+      Groups:
+        - !Ref AdminGroup
+
+  # ----------------------------------------------------------------
+  # Devops Resource
+  # ----------------------------------------------------------------
+  DevopsGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: !Ref DevopsGroupName
+      ManagedPolicyArns:
+        - !Ref AWSManagedCodeCommitPowerUserPolicy
+
+  DevopsUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub '${ProjectName}Devops'
+      Groups:
+        - !Ref DevopsGroup
+      Tags:
+        - Key: role
+          Value: devops
+
+  DevopsUserAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref DevopsUser
+
+  DevopsPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub '${ProjectName}DevopsAccess'
+      PolicyDocument:
+        Statement:
+          - Sid: AllowGetObjectS3Bucket
+            Effect: Allow
+            Action:
+              - 's3:List*'
+              - 's3:Get*'
+            Resource:
+              - !Sub 'arn:aws:s3:::${CFS3BucketInfra}'
+              - !Sub 'arn:aws:s3:::${CFS3BucketService}'
+              - !Sub 'arn:aws:s3:::${CFS3BucketInfra}/*'
+              - !Sub 'arn:aws:s3:::${CFS3BucketService}/*'
+          - Sid: AllowGetCodeBuild
+            Effect: Allow
+            Action:
+              - 'codebuild:List*'
+              - 'codebuild:Get*'
+              - 'codebuild:BatchGet*'
+            Resource:
+              - !Sub 'arn:aws:codebuild:::project/${ProjectName}*'
+          - Sid: AllowGetEventsAndLogs
+            Effect: Allow
+            Action:
+              - 'cloudwatch:GetMetricStatistics'
+              - 'logs:GetLogEvents'
+            Resource: '*'
+      Groups:
+        - !Ref DevopsGroup
+
+  # ----------------------------------------------------------------
+  # Developer Resource
+  # ----------------------------------------------------------------
+  DeveloperGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: !Ref DeveloperGroupName
+      ManagedPolicyArns:
+        - !Ref AWSManagedCodeCommitPowerUserPolicy
+
+  DeveloperUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub '${ProjectName}Developer'
+      Groups:
+        - !Ref DeveloperGroup
+      Tags:
+        - Key: role
+          Value: developer
+
+  DeveloperUserAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref DeveloperUser
+
+  DeveloperPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub '${ProjectName}DeveloperAccess'
+      PolicyDocument:
+        Statement:
+          - Sid: DenyAccessAnyBucket
+            Effect: Deny
+            Action:
+              - 's3:*'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 'events:*'
+              - 'iam:PassRole'
+            Resource: '*'
+      Groups:
+        - !Ref DeveloperGroup
+
+  # ----------------------------------------------------------------
+  # Account Policy
+  # ----------------------------------------------------------------
+  AccountPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub '${ProjectName}AccountAccess'
+      PolicyDocument:
+        Statement:
+          - Sid: AllowListActions
+            Effect: Allow
+            Action:
+              - 'iam:ListUsers'
+              - 'iam:ListVirtualMFADevices'
+            Resource: '*'
+          - Sid: AllowUserCanListOnlyOwnMFA
+            Effect: Allow
+            Action:
+              - 'iam:ListMFADevices'
+            Resource:
+              - arn:aws:iam::*:mfa/*
+              - arn:aws:iam::*:user/${aws:username}
+          - Sid: AllowUserCanManageOnlyOwnMFA
+            Effect: Allow
+            Action:
+              - 'iam:CreateVirtualMFADevice'
+              - 'iam:DeleteVirtualMFADevice'
+              - 'iam:EnableMFADevice'
+              - 'iam:ResyncMFADevice'
+            Resource:
+              - arn:aws:iam::*:mfa/${aws:username}
+              - arn:aws:iam::*:user/${aws:username}
+          - Sid: AllowUserToDeactivateOnlyOwnMFA
+            Effect: Allow
+            Action:
+              - 'iam:DeactivateMFADevice'
+            Resource:
+              - arn:aws:iam::*:mfa/${aws:username}
+              - arn:aws:iam::*:user/${aws:username}
+            Condition:
+              Bool:
+                aws:MultiFactorAuthPresent: 'true'
+          - Sid: BlockMostAccessUnlessSignedInWithMFA
+            Effect: Deny
+            NotAction:
+              - 'iam:CreateVirtualMFADevice'
+              - 'iam:EnableMFADevice'
+              - 'iam:ListMFADevices'
+              - 'iam:ListUsers'
+              - 'iam:ListVirtualMFADevices'
+              - 'iam:ResyncMFADevice'
+            Resource: '*'
+            Condition:
+              BoolIfExists:
+                aws:MultiFactorAuthPresent: 'false'
+      Groups:
+        - !Ref AdminGroup
+
+  DenyChangesToMasterPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub '${ProjectName}DenyChangesToMaster'
+      PolicyDocument:
+        Statement:
+          - Effect: Deny
+            Action:
+              - 'codecommit:GitPush'
+              - 'codecommit:DeleteBranch'
+              - 'codecommit:PutFile'
+              - 'codecommit:MergeBranchesByFastForward'
+              - 'codecommit:MergeBranchesBySquash'
+              - 'codecommit:MergeBranchesByThreeWay'
+              - 'codecommit:MergePullRequestByFastForward'
+              - 'codecommit:MergePullRequestBySquash'
+              - 'codecommit:MergePullRequestByThreeWay'
+            Resource:
+              - !Ref InfraRepositoryArn
+              - !Ref ServiceRepositoryArn
+            Condition:
+              StringEqualsIfExists:
+                codecommit:References:
+                  - refs/heads/master
+                  - refs/heads/develop
+              'Null':
+                'codecommit:References': false
+      Groups:
+        - !Ref DevopsGroup
+        - !Ref DeveloperGroup
+
+Outputs:
+  AdminAccessKey:
+    Value: !Ref AdminUserAccessKey
+
+  DevopsAccessKey:
+    Value: !Ref DevopsUserAccessKey
+
+  DeveloperAccessKey:
+    Value: !Ref DeveloperUserAccessKey
+
+  AdminSecretKey:
+    Value: !GetAtt AdminUserAccessKey.SecretAccessKey
+
+  DevopsSecretKey:
+    Value: !GetAtt DevopsUserAccessKey.SecretAccessKey
+
+  DeveloperSecretKey:
+    Value: !GetAtt DeveloperUserAccessKey.SecretAccessKey

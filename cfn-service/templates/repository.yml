@@ -1,0 +1,63 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: The template for bootstraping permissions associated with AWS resources for each user roles
+
+Parameters:
+  ApiCodeCommitRepositoryName:
+    Description: The repository stores api code
+    Type: String
+    Default: api
+
+  ApiECRRepositoryName:
+    Description: The repository stores docker image
+    Type: String
+    Default: api
+
+Resources:
+  # ----------------------------------------------------------------
+  # CodeCommit
+  # ----------------------------------------------------------------
+  ApiCodeCommitRepository:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: !Ref ApiCodeCommitRepositoryName
+      RepositoryDescription: The repository stores api code
+
+  # ----------------------------------------------------------------
+  # ECR
+  # ----------------------------------------------------------------
+  ApiECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref ApiECRRepositoryName
+      RepositoryPolicyText:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: CodeBuildAccess
+          Effect: Allow
+          Principal:
+            AWS:
+              !Ref AWS::AccountId
+          Action:
+            - 'ecr:BatchCheckLayerAvailability'
+            - 'ecr:BatchGetImage'
+            - 'ecr:CompleteLayerUpload'
+            - 'ecr:DescribeImages'
+            - 'ecr:GetAuthorizationToken'
+            - 'ecr:GetDownloadUrlForLayer'
+            - 'ecr:InitiateLayerUpload'
+            - 'ecr:ListImages'
+            - 'ecr:PutImage'
+            - 'ecr:UploadLayerPart'
+
+Outputs:
+  ApiCodeCommitRepositoryArn:
+    Value: !GetAtt ApiCodeCommitRepository.Arn
+
+  ApiCodeCommitRepositoryUrl:
+    Value: !GetAtt ApiCodeCommitRepository.CloneUrlHttp
+
+  ApiECRRepositoryArn:
+    Value: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${ApiECRRepositoryName}'
+
+  ApiECRRepositoryUri:
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ApiECRRepositoryName}'

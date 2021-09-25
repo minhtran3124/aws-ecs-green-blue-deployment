@@ -1,0 +1,142 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: The template for bootstraping permissions associated with AWS resources for each user roles
+
+Parameters:
+  AdminGroupName:
+    Description: The Admin Group Name
+    Type: String
+    Default: Admin
+
+  ArtifactStoreBucket:
+    Description: The S3 bucket store artifact
+    Type: String
+
+  CfnStackServiceName:
+    Description: The CloudFormation service stack name
+    Type: String
+
+  CFS3BaseUrl:
+    Description: The CloudFormation S3 bucket base url
+    Type: String
+
+  CFS3BucketInfra:
+    Description: The S3 bucket store cloudformation templates of infrastructure
+    Type: String
+
+  CFS3BucketService:
+    Description: The S3 bucket store cloudformation templates of service
+    Type: String
+
+  CloudTrailBucketName:
+    Description: The S3 bucket store cloudtrail
+    Type: String
+
+  DeveloperGroupName:
+    Description: The Developer Group Name
+    Type: String
+    Default: Developer
+
+  DevopsGroupName:
+    Description: The SysOps Group Name
+    Type: String
+    Default: Devops
+
+  InfrastructureRepositoryName:
+    Description: The infrastructure repository name
+    Type: String
+
+  NotificationEndpoint:
+    Description: The email notification endpoint
+    Type: String
+
+  ProjectName:
+    Description: The project name
+    Type: String
+
+  ServiceRepositoryName:
+    Description: The service repository name
+    Type: String
+
+Resources:
+  # ----------------------------------------------------------------
+  # CloudFormation Stack for creating repository store templates
+  # ----------------------------------------------------------------
+  RepositoryStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub '${CFS3BaseUrl}/templates/repository.yml'
+      Parameters:
+        InfrastructureRepositoryName: !Ref InfrastructureRepositoryName
+        ServiceRepositoryName: !Ref ServiceRepositoryName
+
+  # ----------------------------------------------------------------
+  # CloudFormation Stack for creating bucket store artifacts and cloudtrail
+  # ----------------------------------------------------------------
+  BucketStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub '${CFS3BaseUrl}/templates/s3.yml'
+      Parameters:
+        ArtifactStoreBucketName: !Ref ArtifactStoreBucket
+        CloudTrailBucketName: !Ref CloudTrailBucketName
+        SourceObjectKey: 'source.zip'
+
+  # ----------------------------------------------------------------
+  # CloudFormation Stack for initializing policies for users
+  # ----------------------------------------------------------------
+  IAMStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub '${CFS3BaseUrl}/templates/iam.yml'
+      Parameters:
+        AdminGroupName: !Ref AdminGroupName
+        CFS3BucketInfra: !Ref CFS3BucketInfra
+        CFS3BucketService: !Ref CFS3BucketService
+        DeveloperGroupName: !Ref DeveloperGroupName
+        DevopsGroupName: !Ref DevopsGroupName
+        InfraRepositoryArn: !GetAtt RepositoryStack.Outputs.InfraRepositoryArn
+        ProjectName: !Ref ProjectName
+        ServiceRepositoryArn: !GetAtt RepositoryStack.Outputs.ServiceRepositoryArn
+
+  # ----------------------------------------------------------------
+  # CloudFormation Stack for validating templates in pull request
+  # ----------------------------------------------------------------
+  CodeBuildStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub '${CFS3BaseUrl}/templates/codebuild.yml'
+      Parameters:
+        ArtifactStoreBucket: !Ref ArtifactStoreBucket
+        CFS3BucketService: !Ref CFS3BucketService
+        NotificationEndpoint: !Ref NotificationEndpoint
+        ProjectName: !Ref ProjectName
+        RepositoryArn: !GetAtt RepositoryStack.Outputs.ServiceRepositoryArn
+        RepositoryUrl: !GetAtt RepositoryStack.Outputs.ServiceRepositoryUrl
+
+  # --------------------------------------------------------------------------
+  # CloudFormation Stack for creating and executing cloudformation changeset
+  # --------------------------------------------------------------------------
+  CodePipelineStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub '${CFS3BaseUrl}/templates/codepipeline.yml'
+      Parameters:
+        ArtifactStoreBucket: !Ref ArtifactStoreBucket
+        CfnStackServiceName: !Ref CfnStackServiceName
+        CFS3BucketService: !Ref CFS3BucketService
+        NotificationEndpoint: !Ref NotificationEndpoint
+        ProjectName: !Ref ProjectName
+        RepositoryArn: !GetAtt RepositoryStack.Outputs.ServiceRepositoryArn
+
+Outputs:
+  InfraRepositoryUrl:
+    Value: !GetAtt RepositoryStack.Outputs.InfraRepositoryUrl
+
+  InfraRepositorySsh:
+    Value: !GetAtt RepositoryStack.Outputs.InfraRepositorySsh
+
+  ServiceRepositoryUrl:
+    Value: !GetAtt RepositoryStack.Outputs.ServiceRepositoryUrl
+
+  ServiceRepositorySsh:
+    Value: !GetAtt RepositoryStack.Outputs.ServiceRepositorySsh

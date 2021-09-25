@@ -1,0 +1,298 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: The template for initializing codedeploy to apply the CloudFormation code changes
+
+Parameters:
+  ArtifactStoreBucket:
+    Description: The s3 bucket name for store artifacts
+    Type: String
+
+  CodePipelineName:
+    Description: The codepipeline name
+    Type: String
+    Default: 'codecommit-events-pipeline'
+
+  CfnStackServiceName:
+    Description: The CloudFormation stack service name
+    Type: String
+
+  CFS3BucketService:
+    Description: The S3 bucket store cloudformation templates of service
+    Type: String
+
+  NotificationEndpoint:
+    Description: The email receive notification
+    Type: String
+
+  ProjectName:
+    Description: The project name
+    Type: String
+
+  RepositoryArn:
+    Description: The repository arn
+    Type: String
+
+  ServiceStackChangeSetName:
+    Description: The cloudformation change set name
+    Type: String
+    Default: 'cfn-changeset'
+
+  ServiceTemplateFileName:
+    Description: The master file
+    Type: String
+    Default: 'master.yml'
+
+  ServiceStackConfig:
+    Description: The parameter config file
+    Type: String
+    Default: 'parameters.json'
+
+  SourceObjectKey:
+    Description: S3 source artifact
+    Type: String
+    Default: 'source.zip'
+
+Resources:
+  # ----------------------------------------------------------------
+  # CodePipeline Role
+  # ----------------------------------------------------------------
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}CodePipelineInfra'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: !Sub '${ProjectName}CodePielineInfra'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'codedeploy:*'
+                  - 'iam:PassRole'
+                  - 'codebuild:*'
+                  - 'codecommit:*'
+                  - 'cloudformation:*'
+                Resource: '*'
+              - Effect: Allow
+                Action: '*'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${CFS3BucketService}'
+                  - !Sub 'arn:aws:s3:::${CFS3BucketService}/*'
+                  - !Sub 'arn:aws:s3:::${ArtifactStoreBucket}'
+                  - !Sub 'arn:aws:s3:::${ArtifactStoreBucket}/*'
+
+  # ----------------------------------------------------------------
+  # CloudFormation Role
+  # ----------------------------------------------------------------
+  CloudFormationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}CloudformationInfra'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+              - cloudformation.amazonaws.com
+          Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub '${ProjectName}CloudformationInfra'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:*'
+                  - 'sqs:*'
+                  - 'sns:*'
+                  - 'logs:*'
+                  - 'cloudwatch:*'
+                  - 'tag:*'
+                  - 'events:*'
+                  - 'iam:*'
+                  - 'kms:*'
+                  - 'lambda:*'
+                  - 'elasticloadbalancing:*'
+                  - 'elasticloadbalancingv2:*'
+                  - 'codepipeline:*'
+                  - 'codecommit:*'
+                  - 'codedeploy:*'
+                  - 'codebuild:*'
+                  - 'cloudformation:*'
+                  - 'ecs:*'
+                  - 'ec2:*'
+                  - 'ecr:*'
+                  - 'autoscaling:*'
+                  - 'rds:*'
+                  - 'events:*'
+                Resource: '*'
+
+  # ----------------------------------------------------------------
+  # CloudWatch Event Role
+  # ----------------------------------------------------------------
+  CWERuleRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}CWERule'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 'events.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      Path: '/'
+      Policies:
+        - PolicyName: cwe-pipeline-execution
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 'codepipeline:StartPipelineExecution'
+                Resource: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${CodePipelineName}'
+
+  # ----------------------------------------------------------------
+  # CloudWatch Event Rule
+  # ----------------------------------------------------------------
+  CWEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventPattern:
+        source:
+          - 'aws.codecommit'
+        detail-type:
+          - 'CodeCommit Repository State Change'
+        resources:
+          - !Ref RepositoryArn
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - develop
+      Targets:
+        - Id: codepipeline-codecommit
+          Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${CodePipelineName}'
+          RoleArn: !GetAtt CWERuleRole.Arn
+
+  # ----------------------------------------------------------------
+  # CodePipeline - SNS Topic
+  # ----------------------------------------------------------------
+  CodePipelineSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Endpoint: !Ref NotificationEndpoint
+          Protocol: email
+
+  CodePipelineSNSTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Id: !Sub '${AWS::StackName}'
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+                - codecommit.amazonaws.com
+            Action: 'sns:Publish'
+            Resource: '*'
+      Topics:
+        - !Ref CodePipelineSNSTopic
+
+  # ----------------------------------------------------------------
+  # CodePipeline
+  # ----------------------------------------------------------------
+  CodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Ref CodePipelineName
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: TemplateSource
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: S3
+                Version: '1'
+              OutputArtifacts:
+                - Name: TemplateSource
+              Configuration:
+                S3Bucket: !Ref ArtifactStoreBucket
+                S3ObjectKey: !Sub 'cfn-service/${SourceObjectKey}'
+                PollForSourceChanges: false
+              RunOrder: 1
+        - Name: Deploy
+          Actions:
+            - Name: CreateChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              InputArtifacts:
+                - Name: TemplateSource
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM
+                ChangeSetName: !Ref ServiceStackChangeSetName
+                RoleArn: !GetAtt CloudFormationRole.Arn
+                StackName: !Ref CfnStackServiceName
+                TemplateConfiguration: !Sub 'TemplateSource::${ServiceStackConfig}'
+                TemplatePath: !Sub 'TemplateSource::${ServiceTemplateFileName}'
+              RunOrder: 1
+            - Name: ExecuteChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                Capabilities: CAPABILITY_IAM, CAPABILITY_AUTO_EXPAND, CAPABILITY_NAMED_IAM
+                ChangeSetName: !Ref ServiceStackChangeSetName
+                StackName: !Ref CfnStackServiceName
+              RunOrder: 2
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactStoreBucket
+
+  CodePipelineTriggerRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ProjectName}CodePipelineTriggerDeploy'
+      EventPattern:
+        source:
+          - 'aws.s3'
+        detail-type:
+          - 'AWS API Call via CloudTrail'
+        detail:
+          eventSource:
+            - 's3.amazonaws.com'
+          eventName:
+            - CopyObject
+            - PutObject
+            - CompleteMultipartUpload
+          requestParameters:
+            bucketName:
+              - !Ref ArtifactStoreBucket
+            key:
+              - !Sub 'cfn-service/${SourceObjectKey}'
+      Targets:
+        - Id: codepipeline-deploy-cloudformation
+          Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${CodePipelineName}'
+          RoleArn: !GetAtt CWERuleRole.Arn

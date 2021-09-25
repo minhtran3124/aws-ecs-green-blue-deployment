@@ -1,0 +1,119 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: The stack create security groups
+
+Parameters:
+  Environment:
+    Description: The Environment
+    Type: String
+
+  VpcId:
+    Description: The VPC Id
+    Type: AWS::EC2::VPC::Id
+
+Resources:
+  # -----------------------------------------------------
+  # PublicLoadBalancer SecurityGroup
+  # -----------------------------------------------------
+  # Load balancers for getting traffic to containers.
+  # This sample template creates two load balancers:
+  #
+  # - One public load balancer, hosted in public subnets that is accessible
+  #   to the public, and is intended to route traffic to one or more public
+  #   facing services.
+  # - One private load balancer, hosted in private subnets, that only
+  #   accepts traffic from other containers in the Fargate cluster, and is
+  #   intended for private services that should not be accessed directly
+  #   by the public.
+
+  # A public facing load balancer, this is used for accepting traffic from the public
+  # internet and directing it to public facing microservices
+  PublicLoadBalancerSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${Environment}PublicLoadBalancerSG'
+      GroupDescription: Access to the public facing load balancer
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+          # Allow access to ALB from anywhere on the internet
+          - CidrIp: 0.0.0.0/0
+            IpProtocol: '-1'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # An internal load balancer, this would be used for a service that is not
+  # directly accessible to the public, but instead should only receive traffic
+  # from your other services.
+  PrivateLoadBalancerSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${Environment}PrivateLoadBalancerSG'
+      GroupDescription: Access to the internal load balancer
+      VpcId: !Ref VpcId
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # -----------------------------------------------------
+  # FargateContainer SecurityGroup
+  # -----------------------------------------------------
+  FargateContainerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${Environment}FargateContainerSecurityGroup'
+      GroupDescription: Access to the Fargate containers
+      VpcId: !Ref VpcId
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # A security group for the containers we will run in Fargate.
+  # Have three rules of the security group:
+  #   1. allowing network traffic from a public facing load balancer
+  #   2. allowing network traffic from a private internal load balancer
+  #   3. allowing network traffic from other members
+  InboundRuleFromPublicLoadBalancerSG:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Inbound rule permits instances from the public loadbalancer SG
+      IpProtocol: '-1'
+      SourceSecurityGroupId: !Ref PublicLoadBalancerSG
+      GroupId: !Ref FargateContainerSecurityGroup
+
+  InboundRuyleFromPrivateLoadBalancerSG:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Inbound rule permits instances from the private loadbalancer SG
+      IpProtocol: '-1'
+      SourceSecurityGroupId: !Ref PrivateLoadBalancerSG
+      GroupId: !Ref FargateContainerSecurityGroup
+
+  InboundRuleFromSelf:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Inbound rule permits instances from other containers in the same security group
+      IpProtocol: '-1'
+      SourceSecurityGroupId: !Ref FargateContainerSecurityGroup
+      GroupId: !Ref FargateContainerSecurityGroup
+
+  # -----------------------------------------------------
+  # PrivateLoadBalancer SecurityGroup
+  # -----------------------------------------------------
+  PrivateLoadBalancerIngressFromECS:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Only accept traffic from a container in the fargate container security group
+      IpProtocol: '-1'
+      SourceSecurityGroupId: !Ref FargateContainerSecurityGroup
+      GroupId: !Ref PrivateLoadBalancerSG
+
+Outputs:
+  FargateContainerSecurityGroup:
+    Description: A security group used to allow Fargate containers to receive traffic
+    Value: !Ref FargateContainerSecurityGroup
+
+  PublicLoadBalancerSG:
+    Value: !Ref PublicLoadBalancerSG
+
+  PrivateLoadBalancerSG:
+    Value: !Ref PrivateLoadBalancerSG
